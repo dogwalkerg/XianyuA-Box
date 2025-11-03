@@ -22,8 +22,8 @@ const config: ForgeConfig = {
         appBundleId: 'com.snakem982.pandora-box',
         protocols: [
             {
-                name: 'Pandora-Box Protocol',
-                schemes: ['pandora-box']
+                name: 'Xianyu-Box Protocol',
+                schemes: ['Xianyu-box']
             }
         ],
     },
