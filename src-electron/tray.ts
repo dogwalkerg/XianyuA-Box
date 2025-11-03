@@ -76,7 +76,7 @@ ipcMain.on('update-menu', (event, menuTemplate) => {
 
 const initMenu = () => createMenu([
     {
-        label: 'Xianyu-Box', submenu: [
+        label: '闲鱼盒子', submenu: [
             {
                 label: 'Quit', accelerator: 'Cmd+Q', click: readyToQuit
             }
