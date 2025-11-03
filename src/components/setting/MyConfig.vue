@@ -63,7 +63,7 @@ function pxConfigDir() {
 
 // 检查更新
 function checkUpdate() {
-  const url = "https://github.com/snakem982/Pandora-Box/releases"
+  const url = "https://github.com"
   // @ts-ignore
   window["pxOpen"](url)
 }
