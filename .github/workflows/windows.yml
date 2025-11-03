@@ -75,6 +75,12 @@ jobs:
           npm prune
           npx electron-forge make --arch=$arch
 
+      - name: Debug - List output directories
+        shell: pwsh
+        run: |
+          Write-Host "=== Contents of out/ directory ==="
+          Get-ChildItem out -Recurse | Format-Table FullName
+
       - name: Compress Executables
         shell: pwsh
         run: |
@@ -82,8 +88,24 @@ jobs:
           if ($arch -eq "amd64") {
             $arch = "x64"
           }
-          Compress-Archive -Path out\Pandora-Box*\* -DestinationPath "windows-${{ matrix.arch }}-app.zip"
-          Compress-Archive -Path out\make\wix\$arch\* -DestinationPath "windows-${{ matrix.arch }}-msi.zip"
+          
+          # 查找应用目录（更精确的匹配）
+          $appDir = Get-ChildItem out -Directory | Where-Object { $_.Name -match "Pandora-Box|XianyuA-Box" } | Select-Object -First 1
+          
+          if ($appDir) {
+            Write-Host "Found application directory: $($appDir.FullName)"
+            Compress-Archive -Path "$($appDir.FullName)\*" -DestinationPath "windows-${{ matrix.arch }}-app.zip"
+          } else {
+            Write-Host "No application directory found, skipping app.zip creation"
+          }
+          
+          # 压缩 MSI 包
+          $msiPath = "out\make\wix\$arch"
+          if (Test-Path $msiPath) {
+            Compress-Archive -Path "$msiPath\*" -DestinationPath "windows-${{ matrix.arch }}-msi.zip"
+          } else {
+            Write-Host "MSI directory not found: $msiPath"
+          }
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
