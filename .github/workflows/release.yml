@@ -1,0 +1,173 @@
+name: Release App
+
+on:
+  workflow_run:
+    workflows:
+      - Build Windows App
+      - Build Linux App
+      - Build MacOS App
+    types:
+      - completed
+
+jobs:
+  release:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    permissions: write-all
+
+    steps:
+      - name: Check all required workflows success
+        id: check_workflows
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflows = [
+              "Build Windows App",
+              "Build Linux App",
+              "Build MacOS App"
+            ];
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = context.payload.workflow_run.head_branch;
+            
+            core.info(`Checking workflows on branch: ${branch}`);
+
+            let result = 'all_success';
+
+            for (const wfName of workflows) {
+              core.info(`Checking workflow: ${wfName}`);
+              const workflowsList = await github.rest.actions.listRepoWorkflows({ owner, repo });
+              const wf = workflowsList.data.workflows.find(w => w.name === wfName);
+              if (!wf) {
+                core.info(`Workflow '${wfName}' not found`);
+                result = 'incomplete';
+                break;
+              }
+              const runs = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: wf.id,
+                branch,
+                per_page: 1,
+                status: 'completed',
+              });
+              if (runs.data.total_count === 0) {
+                core.info(`No completed runs for ${wfName}`);
+                result = 'incomplete';
+                break;
+              }
+              const latestRun = runs.data.workflow_runs[0];
+              core.info(`Latest run of ${wfName} conclusion: ${latestRun.conclusion}`);
+              if (latestRun.conclusion !== 'success') {
+                core.info(`Skipping release because ${wfName} latest run conclusion is ${latestRun.conclusion}`);
+                result = 'incomplete';
+                break;
+              }
+            }
+            // 写入环境变量传递给后续步骤
+            const fs = require('fs');
+            fs.appendFileSync(process.env.GITHUB_ENV, `RESULT=${result}\n`);
+            core.info(`Set RESULT=${result} in environment`);
+
+      - name: Debug result
+        run: |
+          echo "Workflow check result: $RESULT"
+
+      - name: Checkout Repository
+        if: env.RESULT == 'all_success'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set Version
+        if: env.RESULT == 'all_success'
+        id: set_version
+        shell: bash
+        run: |
+          VERSION=$(git describe --tags --abbrev=0)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Get Previous Release Tag (latest official release)
+        if: env.RESULT == 'all_success'
+        id: get_latest_release
+        shell: bash
+        run: |
+          LATEST_TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)
+          echo "PREV_TAG=$LATEST_TAG" >> $GITHUB_ENV
+
+      - name: Generate Sorted & Deduplicated Changelog
+        if: env.RESULT == 'all_success'
+        shell: bash
+        run: |
+          echo "Generating changelog between $PREV_TAG and $VERSION"
+          
+          # 定义类型优先级
+          declare -A type_order=(
+            [feat]=1
+            [fix]=2
+            [perf]=3
+            [improvement]=4
+            [refactor]=5
+            [style]=6
+            [chore]=7
+            [docs]=8
+            [revert]=9
+            [test]=10
+            [build]=11
+            [ci]=12
+          )
+          
+          # 获取所有提交，按时间顺序反转（老的在前）
+          git log "$PREV_TAG..$VERSION" --pretty=format:"%H %s" --date-order | tac > all_commits.txt
+          
+          # 使用 commit message 去重（只保留第一次出现的）
+          declare -A seen_messages
+          > unique_commits.txt
+          while IFS= read -r line; do
+            commit_hash=$(echo "$line" | cut -d' ' -f1)
+            message=$(echo "$line" | cut -d' ' -f2-)
+            if [[ -z "${seen_messages["$message"]}" ]]; then
+              seen_messages["$message"]=1
+              echo "$commit_hash $message" >> unique_commits.txt
+            fi
+          done < all_commits.txt
+          
+          # 对提交按 type_order 排序
+          while IFS= read -r line; do
+            commit_hash=$(echo "$line" | cut -d' ' -f1)
+            message=$(echo "$line" | cut -d' ' -f2-)
+            type=$(echo "$message" | cut -d':' -f1)
+            weight=${type_order[$type]:-999}
+            echo "$weight|$commit_hash|$message"
+          done < unique_commits.txt | sort -t"|" -k1,1n > sorted_commits.txt
+          
+          # 生成最终 changelog.txt
+          > changelog.txt
+          while IFS='|' read -r weight commit_hash message; do
+            git show -s --format="- %s" "$commit_hash" >> changelog.txt
+          done < sorted_commits.txt
+          
+          # 输出 changelog 内容
+          cat changelog.txt
+          
+          # 设置 GitHub 环境变量 release_notes
+          {
+            echo "release_notes<<EOF"
+            echo "# What's Changed"
+            cat changelog.txt
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+
+      - name: Create GitHub Release
+        if: env.RESULT == 'all_success'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: ${{ env.VERSION }}
+          body: ${{ env.release_notes }}
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
